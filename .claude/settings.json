@@ -6,5 +6,8 @@
         "repo": "anthropics/knowledge-work-plugins"
       }
     }
+  },
+  "enabledPlugins": {
+    "sales@knowledge-work-plugins": true
   }
 }
