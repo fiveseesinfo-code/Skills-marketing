@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ionoscloud": {
+      "command": "/usr/local/bin/ionoscloud-mcp",
+      "env": {
+        "IONOS_TOKEN": "${IONOS_TOKEN}"
+      }
+    }
+  }
+}
