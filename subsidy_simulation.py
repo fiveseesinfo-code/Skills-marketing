@@ -139,6 +139,16 @@ class Assumptions:
     eti: float = 0.30
     # Share of surtax paid by households in each quintile. ILLUSTRATIVE.
     surtax_quintile_shares: tuple = (0.0, 0.0, 0.0, 0.10, 0.90)
+    # Smoothing band below the threshold: from surtax_band_start up to the
+    # threshold, filers pay a flat rate on income above the band start, set so
+    # the charge reaches rate * threshold exactly at the threshold (no cliff).
+    # E.g. 1.25% at $150k with a $100k start -> 3.75% of income above $100k.
+    # 0 = no band. PLACEHOLDERS -> CRA final T1 statistics.
+    surtax_band_start: float = 0.0
+    band_filers: float = 2_600_000.0         # filers with total income in [band start, threshold)
+    band_avg_income: float = 122_000.0       # their mean total income
+    band_marginal_rate: float = 0.43         # combined rate they already face
+    band_quintile_shares: tuple = (0.0, 0.0, 0.25, 0.45, 0.30)   # ILLUSTRATIVE
 
 
 LEVY_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
@@ -253,7 +263,7 @@ def simulate(a=Assumptions(), levy_rates=LEVY_RATES, price_index=None):
 def income_surtax(a=Assumptions()):
     """National annual revenue ($) from the high-earner surtax, after behavioural response."""
     zero = {"static": 0.0, "surtax_collected": 0.0, "existing_tax_lost": 0.0,
-            "bunching_filers": 0.0, "net": 0.0}
+            "bunching_filers": 0.0, "band_collected": 0.0, "net": 0.0}
     if a.surtax_rate <= 0:
         return zero
     rate, T, n = a.surtax_rate, a.surtax_threshold, a.surtax_filers
@@ -262,7 +272,8 @@ def income_surtax(a=Assumptions()):
     # Notch: with an all-income charge and no phase-in, anyone whose income is
     # within the "dominated band" above T keeps more after tax by reporting T.
     bunching = 0.0
-    if a.surtax_avoidance and a.surtax_on_all_income and a.surtax_phase_in <= 0:
+    smoothed = a.surtax_band_start > 0 and a.surtax_on_all_income
+    if a.surtax_avoidance and a.surtax_on_all_income and a.surtax_phase_in <= 0 and not smoothed:
         band = rate * T / (1 - a.top_marginal_rate - rate)   # $ of income
         bunching = min(n, a.filers_per_1k_at_threshold * band / 1_000)
 
@@ -283,8 +294,21 @@ def income_surtax(a=Assumptions()):
     if bunching:
         lost_income += bunching * band / 2   # bunchers drop to T, ~half the band each
     existing_lost = a.top_marginal_rate * lost_income
+
+    band_collected = band_static = 0.0
+    if smoothed:
+        band_rate = rate * T / (T - a.surtax_band_start)
+        band_excess = a.band_avg_income - a.surtax_band_start
+        band_static = band_rate * band_excess * a.band_filers
+        band_shrink = (a.eti * band_rate / (1 - a.band_marginal_rate)) if a.surtax_avoidance else 0.0
+        band_lost = band_shrink * band_excess * a.band_filers
+        band_collected = band_rate * (band_excess - band_shrink * band_excess) * a.band_filers
+        existing_lost += a.band_marginal_rate * band_lost
+        static += band_static
+        collected += band_collected
     return {"static": static, "surtax_collected": collected, "existing_tax_lost": existing_lost,
-            "bunching_filers": bunching, "net": collected - existing_lost}
+            "bunching_filers": bunching, "band_collected": band_collected,
+            "net": collected - existing_lost}
 
 
 def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
@@ -305,8 +329,9 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
     surtax = income_surtax(a)
     pool += surtax["net"] / households
     n_q = len(flows)
-    surtax_paid = [surtax["surtax_collected"] * share / (households / n_q)
-                   for share in a.surtax_quintile_shares]
+    top_part = surtax["surtax_collected"] - surtax["band_collected"]
+    surtax_paid = [(top_part * top + surtax["band_collected"] * band) / (households / n_q)
+                   for top, band in zip(a.surtax_quintile_shares, a.band_quintile_shares)]
 
     # Health levy rebate comes off the top of the pool.
     eligible = [i in a.targeted_quintiles for i in range(len(flows))]
@@ -433,6 +458,8 @@ if __name__ == "__main__":
         "1% contribution, no rebate": replace(a, surtax_rate=0.01, targeted_share=0.5, targeting_mode="voucher"),
         "1.25% contribution + levy rebate": replace(a, surtax_rate=0.0125, targeted_share=0.5,
                                                    targeting_mode="voucher", levy_rebate=True),
+        "+ smoothed from $100k": replace(a, surtax_rate=0.0125, targeted_share=0.5, targeting_mode="voucher",
+                                         levy_rebate=True, surtax_band_start=100_000),
     }
     households = TAX_REGIMES["households"].sum()
     for name, d in designs.items():
@@ -445,4 +472,6 @@ if __name__ == "__main__":
         print(f"    healthy purchases Q1: {q.healthy_qty_change.iloc[0] * 100:+.1f}%,"
               f" healthy price cut Q1/Q3: {q.healthy_price_cut.iloc[0] * 100:.1f}% / {q.healthy_price_cut.iloc[2] * 100:.1f}%")
         st = income_surtax(d)
-        print(f"    contribution revenue: {st['net'] / 1e6:,.0f} M")
+        print(f"    contribution revenue: {st['net'] / 1e6:,.0f} M (band $100k-150k: {st['band_collected'] / 1e6:,.0f} M)")
+        av = income_surtax(replace(d, surtax_avoidance=True))
+        print(f"    if people still avoid it: {av['net'] / 1e6:,.0f} M")
