@@ -149,6 +149,13 @@ class Assumptions:
     band_avg_income: float = 122_000.0       # their mean total income
     band_marginal_rate: float = 0.43         # combined rate they already face
     band_quintile_shares: tuple = (0.0, 0.0, 0.25, 0.45, 0.30)   # ILLUSTRATIVE
+    # Where the contribution goes: "pool" tops up the healthy-food Fund;
+    # "dividend" pays it out as an equal amount to every adult filer with total
+    # income under the band start ($100k), with the GST/HST credit.
+    surtax_use: str = "pool"
+    under_band_filers: float = 25_700_000.0  # adult filers under $100k. PLACEHOLDER -> CRA
+    # Share of those filers living in each household income quintile. ILLUSTRATIVE.
+    dividend_quintile_shares: tuple = (0.22, 0.24, 0.24, 0.20, 0.10)
 
 
 LEVY_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
@@ -327,7 +334,12 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
     # Surtax: collected through the existing tax system, so no extra admin cut.
     households = TAX_REGIMES["households"].sum()
     surtax = income_surtax(a)
-    pool += surtax["net"] / households
+    dividend = [0.0] * len(flows)
+    if a.surtax_use == "dividend":
+        dividend = [surtax["net"] * share / (households / len(flows))
+                    for share in a.dividend_quintile_shares]
+    else:
+        pool += surtax["net"] / households
     n_q = len(flows)
     top_part = surtax["surtax_collected"] - surtax["band_collected"]
     surtax_paid = [(top_part * top + surtax["band_collected"] * band) / (households / n_q)
@@ -376,8 +388,10 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
         cut = s + extra_cut
         paid = surtax_paid[len(out)]
         rebate = rebates[len(out)]
-        net = universal(f) + benefit + rebate - f["levy"] - f["sales_tax_change"] - paid
+        div = dividend[len(out)]
+        net = universal(f) + benefit + rebate + div - f["levy"] - f["sales_tax_change"] - paid
         out.append({"quintile": q.quintile, "levy_paid": f["levy"], "surtax_paid": paid,
+                    "contribution_dividend": div,
                     "levy_rebate": rebate,
                     "universal_subsidy": universal(f), "targeted_benefit": benefit,
                     "healthy_price_cut": cut * a.pass_through,
@@ -460,6 +474,9 @@ if __name__ == "__main__":
                                                    targeting_mode="voucher", levy_rebate=True),
         "+ smoothed from $100k": replace(a, surtax_rate=0.0125, targeted_share=0.5, targeting_mode="voucher",
                                          levy_rebate=True, surtax_band_start=100_000),
+        "+ contribution paid out under $100k": replace(a, surtax_rate=0.0125, targeted_share=0.5,
+                                                       targeting_mode="voucher", levy_rebate=True,
+                                                       surtax_band_start=100_000, surtax_use="dividend"),
     }
     households = TAX_REGIMES["households"].sum()
     for name, d in designs.items():
@@ -475,3 +492,6 @@ if __name__ == "__main__":
         print(f"    contribution revenue: {st['net'] / 1e6:,.0f} M (band $100k-150k: {st['band_collected'] / 1e6:,.0f} M)")
         av = income_surtax(replace(d, surtax_avoidance=True))
         print(f"    if people still avoid it: {av['net'] / 1e6:,.0f} M")
+        if d.surtax_use == "dividend":
+            print(f"    dividend per adult under $100k: {st['net'] / d.under_band_filers:,.0f}/yr;"
+                  f" per household Q1..Q5: " + " ".join(f"{v:.0f}" for v in q.contribution_dividend))
