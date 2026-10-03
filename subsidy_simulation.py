@@ -95,6 +95,20 @@ class Assumptions:
         "restaurant_multiplier": [0.45, 0.70, 1.00, 1.30, 1.80],
     }))
 
+    # Low-income targeting of the subsidy pool.
+    # targeted_share: share of the subsidy pool reserved for eligible households;
+    #   the rest funds the universal shelf-price cut.
+    # targeting_mode:
+    #   "rebate"  -- equal cash payment per eligible household via the tax system
+    #                (GST/HST-credit style); no condition on what it is spent on.
+    #   "voucher" -- extra healthy-food discount at checkout for eligible households
+    #                only (benefit card); changes what they buy.
+    # targeted_quintiles: which quintiles qualify (0 = Q1 lowest).
+    targeted_share: float = 0.0
+    targeting_mode: str = "rebate"
+    targeted_quintiles: tuple = (0, 1)
+    voucher_admin_share: float = 0.08   # extra delivery cost of a benefit-card program
+
 
 LEVY_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
 
@@ -206,21 +220,80 @@ def simulate(a=Assumptions(), levy_rates=LEVY_RATES, price_index=None):
 
 
 def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
-    """Year-1 net gain(+)/loss(-) per household by income quintile, provincial pooling."""
+    """
+    Year-1 net gain(+)/loss(-) per household by income quintile, provincial pooling.
+    Each quintile is 20% of households; the subsidy pool is split between a
+    universal shelf-price cut and, if a.targeted_share > 0, a low-income program.
+    """
     row = TAX_REGIMES.loc[province]
-    avg = household_flows(t, a, row, price_index)
+    flows = [household_flows(t, a, row, price_index, spend_mult=q.food_spend_multiplier,
+                             unhealthy_mult=q.unhealthy_share_multiplier,
+                             restaurant_mult=q.restaurant_multiplier)
+             for q in a.quintiles.itertuples()]
     subsidy_share = 1 - a.admin_share - a.manufacturer_credit_share - a.franchisor_credit_share
-    s = _solve_subsidy(avg["levy"] * subsidy_share, avg["healthy_base"], a, avg["cross_qty"])
+    pool = sum(f["levy"] for f in flows) / len(flows) * subsidy_share   # per average household
+
+    # Universal shelf-price cut funded by the untargeted part of the pool.
+    mean_base = sum(f["healthy_base"] for f in flows) / len(flows)
+    mean_cross = sum(f["healthy_base"] * f["cross_qty"] for f in flows) / len(flows) / mean_base
+    s = _solve_subsidy(pool * (1 - a.targeted_share), mean_base, a, mean_cross)
+
+    # Targeted program: budget per eligible household.
+    eligible = [i in a.targeted_quintiles for i in range(len(flows))]
+    per_eligible = pool * a.targeted_share * len(flows) / max(sum(eligible), 1)
+
+    def universal(f):
+        return s * f["healthy_base"] * _qty(-s * a.pass_through, a.e_healthy) * f["cross_qty"]
+
+    def voucher_cost(v, f):
+        total = (s + v) * f["healthy_base"] * _qty(-(s + v) * a.pass_through, a.e_healthy) * f["cross_qty"]
+        return total - universal(f)
+
+    v = 0.0
+    if a.targeting_mode == "voucher" and per_eligible > 0:
+        budget = per_eligible * (1 - a.voucher_admin_share)
+        elig_flows = [f for f, e in zip(flows, eligible) if e]
+        lo, hi = 0.0, 0.9 - s
+        for _ in range(60):
+            v = (lo + hi) / 2
+            cost = sum(voucher_cost(v, f) for f in elig_flows) / len(elig_flows)
+            lo, hi = (v, hi) if cost < budget else (lo, v)
+        v = (lo + hi) / 2
+
     out = []
-    for q in a.quintiles.itertuples():
-        f = household_flows(t, a, row, price_index, spend_mult=q.food_spend_multiplier,
-                            unhealthy_mult=q.unhealthy_share_multiplier,
-                            restaurant_mult=q.restaurant_multiplier)
-        subsidy = s * f["healthy_base"] * _qty(-s * a.pass_through, a.e_healthy) * f["cross_qty"]
-        net = subsidy - f["levy"] - f["sales_tax_change"]
-        out.append({"quintile": q.quintile, "levy_paid": f["levy"], "subsidy_received": subsidy,
+    for q, f, is_eligible in zip(a.quintiles.itertuples(), flows, eligible):
+        benefit, extra_cut = 0.0, 0.0
+        if is_eligible and a.targeted_share > 0:
+            if a.targeting_mode == "voucher":
+                benefit, extra_cut = voucher_cost(v, f), v
+            else:
+                benefit = per_eligible
+        cut = s + extra_cut
+        net = universal(f) + benefit - f["levy"] - f["sales_tax_change"]
+        out.append({"quintile": q.quintile, "levy_paid": f["levy"],
+                    "universal_subsidy": universal(f), "targeted_benefit": benefit,
+                    "healthy_price_cut": cut * a.pass_through,
+                    "healthy_qty_change": _qty(-cut * a.pass_through, a.e_healthy) * f["cross_qty"] - 1,
                     "net_per_household": net, "net_pct_income": net / q.income})
     return pd.DataFrame(out)
+
+
+def compare_targeting(t, province="ON", base=Assumptions()):
+    """Year-1 quintile results for universal vs. low-income-targeted designs."""
+    from dataclasses import replace
+    designs = {
+        "Universal price cut": replace(base, targeted_share=0.0),
+        "50% rebate to Q1-Q2": replace(base, targeted_share=0.5, targeting_mode="rebate"),
+        "100% rebate to Q1-Q2": replace(base, targeted_share=1.0, targeting_mode="rebate"),
+        "50% voucher to Q1-Q2": replace(base, targeted_share=0.5, targeting_mode="voucher"),
+        "100% voucher to Q1-Q2": replace(base, targeted_share=1.0, targeting_mode="voucher"),
+    }
+    frames = []
+    for name, a in designs.items():
+        df = quintile_impact(t, a, province)
+        df.insert(0, "design", name)
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
 
 
 if __name__ == "__main__":
@@ -243,5 +316,13 @@ if __name__ == "__main__":
     print("\nBase erosion from reformulation at 15% levy (national, $ millions)")
     print(results[results.levy_rate == 0.15].groupby("year")[["levy_revenue_m", "subsidy_paid_m"]].sum().round(0))
 
-    print("\nYear 1 at 15% levy, Ontario, by income quintile (ILLUSTRATIVE quintile inputs)")
-    print(quintile_impact(0.15, a, "ON").round(3))
+    print("\nYear 1 at 15% levy, Ontario -- universal vs low-income targeting (ILLUSTRATIVE quintile inputs)")
+    cmp = compare_targeting(0.15, "ON", a)
+    cmp.to_csv("targeting_comparison.csv", index=False)
+    order = cmp["design"].unique()
+    print("Net gain(+)/loss(-) as % of household income:")
+    print((cmp.pivot(index="design", columns="quintile", values="net_pct_income").reindex(order) * 100).round(2))
+    print("Net $ per household per year:")
+    print(cmp.pivot(index="design", columns="quintile", values="net_per_household").reindex(order).round(0))
+    print("Healthy-food purchases, change in quantity:")
+    print((cmp.pivot(index="design", columns="quintile", values="healthy_qty_change").reindex(order) * 100).round(1))
