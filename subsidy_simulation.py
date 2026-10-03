@@ -118,7 +118,9 @@ class Assumptions:
     franchised_restaurant_sales: float = 60e9
     franchisor_royalty_share: float = 0.06       # royalties as share of system sales
     franchised_share_of_restaurant_spend: float = 0.5
-    industry_pass_through: float = 1.0
+    # The bill (s. 20.5) bars passing the contribution on in prices; 0 = fully
+    # absorbed by the companies (shareholder incidence not modelled).
+    industry_pass_through: float = 0.0
     # Health levy rebate: eligible households (targeted_quintiles) get back the
     # levy their quintile pays on average, plus the sales tax charged on it,
     # paid with the quarterly GST/HST credit. A fixed amount per quintile -- not
