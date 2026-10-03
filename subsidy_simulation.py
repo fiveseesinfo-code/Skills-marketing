@@ -111,16 +111,19 @@ class Assumptions:
 
     # Federal income surtax on high earners; revenue tops up the subsidy pool
     # (split universal/targeted like levy revenue).
-    # Default design: 1% of TOTAL income for anyone earning over $150,000.
-    # That creates a notch -- $1 over the line costs $1,500 -- so filers just
-    # above it are better off reporting exactly $150,000 (bunching, modelled below).
-    # Set surtax_on_all_income=False to charge only income above the threshold,
-    # or surtax_phase_in to phase the charge in and remove the notch.
+    # Default design: anyone with total income of $150,000 or more pays 1% of
+    # their TOTAL income (T1 line 15000 -- before RRSP or any other deduction),
+    # with no shelters, credits or deductions against it (surtax_avoidance=False).
+    # surtax_avoidance=True instead models filers reacting anyway: reporting less
+    # income (eti) and bunching just under the $150k notch.
+    # Variants: surtax_on_all_income=False charges only income above the line;
+    # surtax_phase_in phases the charge in to remove the notch.
     # PLACEHOLDERS -> CRA final T1 statistics by income bracket.
     surtax_rate: float = 0.0
+    surtax_avoidance: bool = False
     surtax_on_all_income: bool = True
     surtax_threshold: float = 150_000.0
-    surtax_filers: float = 1_700_000.0       # filers with total income > threshold
+    surtax_filers: float = 1_700_000.0       # filers with total income >= threshold
     surtax_avg_income: float = 280_000.0     # their mean total income
     filers_per_1k_at_threshold: float = 22_000.0  # filer density just above the line
     surtax_phase_in: float = 0.0             # e.g. 0.10 -> charge = min(rate*income, 10% of excess)
@@ -253,21 +256,21 @@ def income_surtax(a=Assumptions()):
     # Notch: with an all-income charge and no phase-in, anyone whose income is
     # within the "dominated band" above T keeps more after tax by reporting T.
     bunching = 0.0
-    if a.surtax_on_all_income and a.surtax_phase_in <= 0:
+    if a.surtax_avoidance and a.surtax_on_all_income and a.surtax_phase_in <= 0:
         band = rate * T / (1 - a.top_marginal_rate - rate)   # $ of income
         bunching = min(n, a.filers_per_1k_at_threshold * band / 1_000)
 
     def charge(income):
         if not a.surtax_on_all_income:
-            return rate * max(0.0, income - T)
+            return rate * max(0.0, income - T) if income >= T else 0.0
         if a.surtax_phase_in > 0:
             return min(rate * income, a.surtax_phase_in * max(0.0, income - T))
-        return rate * income
+        return rate * income if income >= T else 0.0
 
     static = charge(a.surtax_avg_income) * n
     # Everyone left above the line faces +rate at the margin and reports less income.
     payers = n - bunching
-    shrink = a.eti * rate / (1 - a.top_marginal_rate)
+    shrink = a.eti * rate / (1 - a.top_marginal_rate) if a.surtax_avoidance else 0.0
     new_income = a.surtax_avg_income - shrink * excess
     collected = charge(new_income) * payers
     lost_income = shrink * excess * payers
@@ -394,20 +397,15 @@ if __name__ == "__main__":
     print((cmp.pivot(index="design", columns="quintile", values="healthy_qty_change").reindex(order) * 100).round(1))
 
     st = income_surtax(replace(a, surtax_rate=0.01))
-    print("\n1% of total income for filers earning over $150,000 (national, $ millions/yr)")
-    print(f"  static estimate        {st['static'] / 1e6:8.0f}")
+    print("\n1% of total income for anyone earning $150,000 or more, no deductions (national, $ millions/yr)")
     print(f"  surtax collected       {st['surtax_collected'] / 1e6:8.0f}")
-    print(f"  existing tax lost      {-st['existing_tax_lost'] / 1e6:8.0f}   (reported income falls)")
     print(f"  net to subsidy pool    {st['net'] / 1e6:8.0f}")
-    print(f"  filers bunching at $150k to dodge the notch: {st['bunching_filers']:,.0f}")
-    alt = {"phase-in 10% of excess": replace(a, surtax_rate=0.01, surtax_phase_in=0.10),
-           "1 pt above $150k only": replace(a, surtax_rate=0.01, surtax_on_all_income=False)}
-    for name, alt_a in alt.items():
-        r = income_surtax(alt_a)
-        print(f"  alt: {name:24s} net {r['net'] / 1e6:6.0f}, bunching {r['bunching_filers']:,.0f}")
+    av = income_surtax(replace(a, surtax_rate=0.01, surtax_avoidance=True))
+    print(f"  sensitivity -- if filers still react (eti {a.eti}, notch bunching):")
+    print(f"    net {av['net'] / 1e6:6.0f}, filers bunching under $150k {av['bunching_filers']:,.0f}")
     print("\nYear 1 at 15% levy, Ontario -- with vs without the surtax (% of income)")
     with_surtax = compare_targeting(0.15, "ON", replace(a, surtax_rate=0.01))
-    both = pd.concat([cmp.assign(surtax="no surtax"), with_surtax.assign(surtax="1% of income >$150k")])
+    both = pd.concat([cmp.assign(surtax="no surtax"), with_surtax.assign(surtax="1% of income >=$150k")])
     both.to_csv("targeting_comparison.csv", index=False)
     table = both.pivot_table(index=["design", "surtax"], columns="quintile", values="net_pct_income",
                              sort=False) * 100
