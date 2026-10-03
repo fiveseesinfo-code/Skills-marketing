@@ -109,23 +109,27 @@ class Assumptions:
     targeted_quintiles: tuple = (0, 1)
     voucher_admin_share: float = 0.08   # extra delivery cost of a benefit-card program
 
-    # Federal income surtax on the top 10% of earners; revenue tops up the
-    # subsidy pool (split universal/targeted like levy revenue).
-    # Applies as an extra marginal rate on income ABOVE the threshold, or on all
-    # income of top-10% filers if surtax_on_all_income is True.
-    # PLACEHOLDERS -> CRA final T1 statistics / StatCan Table "high-income tax filers".
+    # Federal income surtax on high earners; revenue tops up the subsidy pool
+    # (split universal/targeted like levy revenue).
+    # Default design: 1% of TOTAL income for anyone earning over $150,000.
+    # That creates a notch -- $1 over the line costs $1,500 -- so filers just
+    # above it are better off reporting exactly $150,000 (bunching, modelled below).
+    # Set surtax_on_all_income=False to charge only income above the threshold,
+    # or surtax_phase_in to phase the charge in and remove the notch.
+    # PLACEHOLDERS -> CRA final T1 statistics by income bracket.
     surtax_rate: float = 0.0
-    surtax_on_all_income: bool = False
-    top10_threshold: float = 120_000.0     # individual income at the 90th percentile
-    top10_filers: float = 3_000_000.0      # ~10% of tax filers
-    top10_avg_income: float = 260_000.0    # mean total income of top-10% filers
-    top_marginal_rate: float = 0.50        # combined fed+prov rate they already face (44.5%-54.8%)
+    surtax_on_all_income: bool = True
+    surtax_threshold: float = 150_000.0
+    surtax_filers: float = 1_700_000.0       # filers with total income > threshold
+    surtax_avg_income: float = 280_000.0     # their mean total income
+    filers_per_1k_at_threshold: float = 22_000.0  # filer density just above the line
+    surtax_phase_in: float = 0.0             # e.g. 0.10 -> charge = min(rate*income, 10% of excess)
+    top_marginal_rate: float = 0.47        # combined fed+prov marginal rate around/above $150k
     # Elasticity of taxable income: % drop in reported income per 1% drop in
-    # (1 - marginal rate). Canadian top-earner estimates span ~0.2 to ~0.7.
+    # (1 - marginal rate). Canadian high-earner estimates span ~0.2 to ~0.7.
     eti: float = 0.30
-    # Share of surtax paid by households in each quintile (top earners sit
-    # mostly in Q5 households). ILLUSTRATIVE.
-    surtax_quintile_shares: tuple = (0.0, 0.0, 0.0, 0.15, 0.85)
+    # Share of surtax paid by households in each quintile. ILLUSTRATIVE.
+    surtax_quintile_shares: tuple = (0.0, 0.0, 0.0, 0.10, 0.90)
 
 
 LEVY_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
@@ -238,19 +242,40 @@ def simulate(a=Assumptions(), levy_rates=LEVY_RATES, price_index=None):
 
 
 def income_surtax(a=Assumptions()):
-    """National annual revenue ($) from the top-10% surtax, after behavioural response."""
+    """National annual revenue ($) from the high-earner surtax, after behavioural response."""
+    zero = {"static": 0.0, "surtax_collected": 0.0, "existing_tax_lost": 0.0,
+            "bunching_filers": 0.0, "net": 0.0}
     if a.surtax_rate <= 0:
-        return {"static": 0.0, "surtax_collected": 0.0, "existing_tax_lost": 0.0, "net": 0.0}
-    per_filer_base = a.top10_avg_income if a.surtax_on_all_income else a.top10_avg_income - a.top10_threshold
-    base = per_filer_base * a.top10_filers
-    # Net-of-tax rate falls from (1-tau) to (1-tau-dt); reported income shrinks by eti * that %.
-    shrink = a.eti * a.surtax_rate / (1 - a.top_marginal_rate)
-    # Response happens at the margin, i.e. on income above the threshold.
-    lost_income = shrink * (a.top10_avg_income - a.top10_threshold) * a.top10_filers
-    collected = a.surtax_rate * (base - lost_income)
+        return zero
+    rate, T, n = a.surtax_rate, a.surtax_threshold, a.surtax_filers
+    excess = a.surtax_avg_income - T
+
+    # Notch: with an all-income charge and no phase-in, anyone whose income is
+    # within the "dominated band" above T keeps more after tax by reporting T.
+    bunching = 0.0
+    if a.surtax_on_all_income and a.surtax_phase_in <= 0:
+        band = rate * T / (1 - a.top_marginal_rate - rate)   # $ of income
+        bunching = min(n, a.filers_per_1k_at_threshold * band / 1_000)
+
+    def charge(income):
+        if not a.surtax_on_all_income:
+            return rate * max(0.0, income - T)
+        if a.surtax_phase_in > 0:
+            return min(rate * income, a.surtax_phase_in * max(0.0, income - T))
+        return rate * income
+
+    static = charge(a.surtax_avg_income) * n
+    # Everyone left above the line faces +rate at the margin and reports less income.
+    payers = n - bunching
+    shrink = a.eti * rate / (1 - a.top_marginal_rate)
+    new_income = a.surtax_avg_income - shrink * excess
+    collected = charge(new_income) * payers
+    lost_income = shrink * excess * payers
+    if bunching:
+        lost_income += bunching * band / 2   # bunchers drop to T, ~half the band each
     existing_lost = a.top_marginal_rate * lost_income
-    return {"static": a.surtax_rate * base, "surtax_collected": collected,
-            "existing_tax_lost": existing_lost, "net": collected - existing_lost}
+    return {"static": static, "surtax_collected": collected, "existing_tax_lost": existing_lost,
+            "bunching_filers": bunching, "net": collected - existing_lost}
 
 
 def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
@@ -369,15 +394,20 @@ if __name__ == "__main__":
     print((cmp.pivot(index="design", columns="quintile", values="healthy_qty_change").reindex(order) * 100).round(1))
 
     st = income_surtax(replace(a, surtax_rate=0.01))
-    print("\n+1 point surtax on income above the top-10% threshold (national, $ millions/yr)")
+    print("\n1% of total income for filers earning over $150,000 (national, $ millions/yr)")
     print(f"  static estimate        {st['static'] / 1e6:8.0f}")
     print(f"  surtax collected       {st['surtax_collected'] / 1e6:8.0f}")
-    print(f"  existing tax lost      {-st['existing_tax_lost'] / 1e6:8.0f}   (top earners report less income)")
+    print(f"  existing tax lost      {-st['existing_tax_lost'] / 1e6:8.0f}   (reported income falls)")
     print(f"  net to subsidy pool    {st['net'] / 1e6:8.0f}")
-
+    print(f"  filers bunching at $150k to dodge the notch: {st['bunching_filers']:,.0f}")
+    alt = {"phase-in 10% of excess": replace(a, surtax_rate=0.01, surtax_phase_in=0.10),
+           "1 pt above $150k only": replace(a, surtax_rate=0.01, surtax_on_all_income=False)}
+    for name, alt_a in alt.items():
+        r = income_surtax(alt_a)
+        print(f"  alt: {name:24s} net {r['net'] / 1e6:6.0f}, bunching {r['bunching_filers']:,.0f}")
     print("\nYear 1 at 15% levy, Ontario -- with vs without the surtax (% of income)")
     with_surtax = compare_targeting(0.15, "ON", replace(a, surtax_rate=0.01))
-    both = pd.concat([cmp.assign(surtax="no surtax"), with_surtax.assign(surtax="+1 pt top-10%")])
+    both = pd.concat([cmp.assign(surtax="no surtax"), with_surtax.assign(surtax="1% of income >$150k")])
     both.to_csv("targeting_comparison.csv", index=False)
     table = both.pivot_table(index=["design", "surtax"], columns="quintile", values="net_pct_income",
                              sort=False) * 100
