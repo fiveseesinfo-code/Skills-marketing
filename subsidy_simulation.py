@@ -108,6 +108,12 @@ class Assumptions:
     targeting_mode: str = "rebate"
     targeted_quintiles: tuple = (0, 1)
     voucher_admin_share: float = 0.08   # extra delivery cost of a benefit-card program
+    # Health levy rebate: eligible households (targeted_quintiles) get back the
+    # levy their quintile pays on average, plus the sales tax charged on it,
+    # paid with the quarterly GST/HST credit. A fixed amount per quintile -- not
+    # tied to the household's own purchases, so the price signal is kept.
+    # Paid first out of the subsidy pool; the rest is split as above.
+    levy_rebate: bool = False
 
     # Federal income surtax on high earners; revenue tops up the subsidy pool
     # (split universal/targeted like levy revenue).
@@ -302,13 +308,18 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
     surtax_paid = [surtax["surtax_collected"] * share / (households / n_q)
                    for share in a.surtax_quintile_shares]
 
+    # Health levy rebate comes off the top of the pool.
+    eligible = [i in a.targeted_quintiles for i in range(len(flows))]
+    rebates = [f["levy"] + f["sales_tax_change"] if (a.levy_rebate and e) else 0.0
+               for f, e in zip(flows, eligible)]
+    pool -= sum(rebates) / n_q
+
     # Universal shelf-price cut funded by the untargeted part of the pool.
     mean_base = sum(f["healthy_base"] for f in flows) / len(flows)
     mean_cross = sum(f["healthy_base"] * f["cross_qty"] for f in flows) / len(flows) / mean_base
     s = _solve_subsidy(pool * (1 - a.targeted_share), mean_base, a, mean_cross)
 
     # Targeted program: budget per eligible household.
-    eligible = [i in a.targeted_quintiles for i in range(len(flows))]
     per_eligible = pool * a.targeted_share * len(flows) / max(sum(eligible), 1)
 
     def universal(f):
@@ -339,8 +350,10 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
                 benefit = per_eligible
         cut = s + extra_cut
         paid = surtax_paid[len(out)]
-        net = universal(f) + benefit - f["levy"] - f["sales_tax_change"] - paid
+        rebate = rebates[len(out)]
+        net = universal(f) + benefit + rebate - f["levy"] - f["sales_tax_change"] - paid
         out.append({"quintile": q.quintile, "levy_paid": f["levy"], "surtax_paid": paid,
+                    "levy_rebate": rebate,
                     "universal_subsidy": universal(f), "targeted_benefit": benefit,
                     "healthy_price_cut": cut * a.pass_through,
                     "healthy_qty_change": _qty(-cut * a.pass_through, a.e_healthy) * f["cross_qty"] - 1,
@@ -414,3 +427,22 @@ if __name__ == "__main__":
     q1 = both[both.quintile == "Q1 (lowest)"].pivot_table(index="design", columns="surtax",
                                                           values="healthy_qty_change", sort=False) * 100
     print(q1.round(1))
+
+    print("\nBill design, year 1 at 15% levy, Ontario: 50% healthy food benefit to Q1-Q2")
+    designs = {
+        "1% contribution, no rebate": replace(a, surtax_rate=0.01, targeted_share=0.5, targeting_mode="voucher"),
+        "1.25% contribution + levy rebate": replace(a, surtax_rate=0.0125, targeted_share=0.5,
+                                                   targeting_mode="voucher", levy_rebate=True),
+    }
+    households = TAX_REGIMES["households"].sum()
+    for name, d in designs.items():
+        q = quintile_impact(0.15, d, "ON")
+        print(f"  {name}")
+        print("    net % of income:  " + "  ".join(f"{v * 100:+.2f}" for v in q.net_pct_income))
+        print("    net $/household:  " + "  ".join(f"{v:+.0f}" for v in q.net_per_household))
+        print(f"    levy rebate, Q1/Q2 per household: {q.levy_rebate.iloc[0]:.0f} / {q.levy_rebate.iloc[1]:.0f};"
+              f" national cost ~{q.levy_rebate.mean() * households / 1e6:,.0f} M")
+        print(f"    healthy purchases Q1: {q.healthy_qty_change.iloc[0] * 100:+.1f}%,"
+              f" healthy price cut Q1/Q3: {q.healthy_price_cut.iloc[0] * 100:.1f}% / {q.healthy_price_cut.iloc[2] * 100:.1f}%")
+        st = income_surtax(d)
+        print(f"    contribution revenue: {st['net'] / 1e6:,.0f} M")
