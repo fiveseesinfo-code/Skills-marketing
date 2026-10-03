@@ -137,6 +137,11 @@ class Assumptions:
     # Elasticity of taxable income: % drop in reported income per 1% drop in
     # (1 - marginal rate). Canadian high-earner estimates span ~0.2 to ~0.7.
     eti: float = 0.30
+    # With the bill's anti-avoidance package (full capital gains, no loss
+    # offsets, refundable corporate/trust contributions, income attribution,
+    # deferral and departure rules) fewer channels remain, so the response
+    # should be smaller. Base broadening itself is not yet estimated. PLACEHOLDER.
+    eti_gaps_closed: float = 0.10
     # Share of surtax paid by households in each quintile. ILLUSTRATIVE.
     surtax_quintile_shares: tuple = (0.0, 0.0, 0.0, 0.10, 0.90)
     # Smoothing band below the threshold: from surtax_band_start up to the
@@ -491,7 +496,9 @@ if __name__ == "__main__":
         st = income_surtax(d)
         print(f"    contribution revenue: {st['net'] / 1e6:,.0f} M (band $100k-150k: {st['band_collected'] / 1e6:,.0f} M)")
         av = income_surtax(replace(d, surtax_avoidance=True))
-        print(f"    if people still avoid it: {av['net'] / 1e6:,.0f} M")
+        closed = income_surtax(replace(d, surtax_avoidance=True, eti=d.eti_gaps_closed))
+        print(f"    if people still avoid it: {av['net'] / 1e6:,.0f} M;"
+              f" with anti-avoidance package: {closed['net'] / 1e6:,.0f} M")
         if d.surtax_use == "dividend":
             print(f"    dividend per adult under $100k: {st['net'] / d.under_band_filers:,.0f}/yr;"
                   f" per household Q1..Q5: " + " ".join(f"{v:.0f}" for v in q.contribution_dividend))
