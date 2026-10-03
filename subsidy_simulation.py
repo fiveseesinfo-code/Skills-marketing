@@ -25,7 +25,7 @@ Usage:
     python subsidy_simulation.py grocery_inventory.csv # regional price index from harvest
 """
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pandas as pd
 
@@ -108,6 +108,24 @@ class Assumptions:
     targeting_mode: str = "rebate"
     targeted_quintiles: tuple = (0, 1)
     voucher_admin_share: float = 0.08   # extra delivery cost of a benefit-card program
+
+    # Federal income surtax on the top 10% of earners; revenue tops up the
+    # subsidy pool (split universal/targeted like levy revenue).
+    # Applies as an extra marginal rate on income ABOVE the threshold, or on all
+    # income of top-10% filers if surtax_on_all_income is True.
+    # PLACEHOLDERS -> CRA final T1 statistics / StatCan Table "high-income tax filers".
+    surtax_rate: float = 0.0
+    surtax_on_all_income: bool = False
+    top10_threshold: float = 120_000.0     # individual income at the 90th percentile
+    top10_filers: float = 3_000_000.0      # ~10% of tax filers
+    top10_avg_income: float = 260_000.0    # mean total income of top-10% filers
+    top_marginal_rate: float = 0.50        # combined fed+prov rate they already face (44.5%-54.8%)
+    # Elasticity of taxable income: % drop in reported income per 1% drop in
+    # (1 - marginal rate). Canadian top-earner estimates span ~0.2 to ~0.7.
+    eti: float = 0.30
+    # Share of surtax paid by households in each quintile (top earners sit
+    # mostly in Q5 households). ILLUSTRATIVE.
+    surtax_quintile_shares: tuple = (0.0, 0.0, 0.0, 0.15, 0.85)
 
 
 LEVY_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
@@ -219,6 +237,22 @@ def simulate(a=Assumptions(), levy_rates=LEVY_RATES, price_index=None):
     return pd.DataFrame(rows)
 
 
+def income_surtax(a=Assumptions()):
+    """National annual revenue ($) from the top-10% surtax, after behavioural response."""
+    if a.surtax_rate <= 0:
+        return {"static": 0.0, "surtax_collected": 0.0, "existing_tax_lost": 0.0, "net": 0.0}
+    per_filer_base = a.top10_avg_income if a.surtax_on_all_income else a.top10_avg_income - a.top10_threshold
+    base = per_filer_base * a.top10_filers
+    # Net-of-tax rate falls from (1-tau) to (1-tau-dt); reported income shrinks by eti * that %.
+    shrink = a.eti * a.surtax_rate / (1 - a.top_marginal_rate)
+    # Response happens at the margin, i.e. on income above the threshold.
+    lost_income = shrink * (a.top10_avg_income - a.top10_threshold) * a.top10_filers
+    collected = a.surtax_rate * (base - lost_income)
+    existing_lost = a.top_marginal_rate * lost_income
+    return {"static": a.surtax_rate * base, "surtax_collected": collected,
+            "existing_tax_lost": existing_lost, "net": collected - existing_lost}
+
+
 def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
     """
     Year-1 net gain(+)/loss(-) per household by income quintile, provincial pooling.
@@ -232,6 +266,13 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
              for q in a.quintiles.itertuples()]
     subsidy_share = 1 - a.admin_share - a.manufacturer_credit_share - a.franchisor_credit_share
     pool = sum(f["levy"] for f in flows) / len(flows) * subsidy_share   # per average household
+    # Surtax: collected through the existing tax system, so no extra admin cut.
+    households = TAX_REGIMES["households"].sum()
+    surtax = income_surtax(a)
+    pool += surtax["net"] / households
+    n_q = len(flows)
+    surtax_paid = [surtax["surtax_collected"] * share / (households / n_q)
+                   for share in a.surtax_quintile_shares]
 
     # Universal shelf-price cut funded by the untargeted part of the pool.
     mean_base = sum(f["healthy_base"] for f in flows) / len(flows)
@@ -269,8 +310,9 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
             else:
                 benefit = per_eligible
         cut = s + extra_cut
-        net = universal(f) + benefit - f["levy"] - f["sales_tax_change"]
-        out.append({"quintile": q.quintile, "levy_paid": f["levy"],
+        paid = surtax_paid[len(out)]
+        net = universal(f) + benefit - f["levy"] - f["sales_tax_change"] - paid
+        out.append({"quintile": q.quintile, "levy_paid": f["levy"], "surtax_paid": paid,
                     "universal_subsidy": universal(f), "targeted_benefit": benefit,
                     "healthy_price_cut": cut * a.pass_through,
                     "healthy_qty_change": _qty(-cut * a.pass_through, a.e_healthy) * f["cross_qty"] - 1,
@@ -280,7 +322,6 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
 
 def compare_targeting(t, province="ON", base=Assumptions()):
     """Year-1 quintile results for universal vs. low-income-targeted designs."""
-    from dataclasses import replace
     designs = {
         "Universal price cut": replace(base, targeted_share=0.0),
         "50% rebate to Q1-Q2": replace(base, targeted_share=0.5, targeting_mode="rebate"),
@@ -326,3 +367,22 @@ if __name__ == "__main__":
     print(cmp.pivot(index="design", columns="quintile", values="net_per_household").reindex(order).round(0))
     print("Healthy-food purchases, change in quantity:")
     print((cmp.pivot(index="design", columns="quintile", values="healthy_qty_change").reindex(order) * 100).round(1))
+
+    st = income_surtax(replace(a, surtax_rate=0.01))
+    print("\n+1 point surtax on income above the top-10% threshold (national, $ millions/yr)")
+    print(f"  static estimate        {st['static'] / 1e6:8.0f}")
+    print(f"  surtax collected       {st['surtax_collected'] / 1e6:8.0f}")
+    print(f"  existing tax lost      {-st['existing_tax_lost'] / 1e6:8.0f}   (top earners report less income)")
+    print(f"  net to subsidy pool    {st['net'] / 1e6:8.0f}")
+
+    print("\nYear 1 at 15% levy, Ontario -- with vs without the surtax (% of income)")
+    with_surtax = compare_targeting(0.15, "ON", replace(a, surtax_rate=0.01))
+    both = pd.concat([cmp.assign(surtax="no surtax"), with_surtax.assign(surtax="+1 pt top-10%")])
+    both.to_csv("targeting_comparison.csv", index=False)
+    table = both.pivot_table(index=["design", "surtax"], columns="quintile", values="net_pct_income",
+                             sort=False) * 100
+    print(table.round(2))
+    print("Healthy-food purchases, change in quantity, Q1 (lowest):")
+    q1 = both[both.quintile == "Q1 (lowest)"].pivot_table(index="design", columns="surtax",
+                                                          values="healthy_qty_change", sort=False) * 100
+    print(q1.round(1))
