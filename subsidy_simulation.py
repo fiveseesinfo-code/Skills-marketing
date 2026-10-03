@@ -108,6 +108,17 @@ class Assumptions:
     targeting_mode: str = "rebate"
     targeted_quintiles: tuple = (0, 1)
     voucher_admin_share: float = 0.08   # extra delivery cost of a benefit-card program
+    # Food industry contribution: % of gross Canadian sales of grocery retailers
+    # and of franchised restaurants (franchisees' sales + franchisors' royalty
+    # revenue), credited to the Fund. Assumed fully passed on to shoppers as a
+    # price rise on all grocery and franchised-restaurant spending.
+    # PLACEHOLDERS -> StatCan retail trade (NAICS 4451) and foodservice sales.
+    industry_rate: float = 0.0
+    grocery_sales: float = 110e9
+    franchised_restaurant_sales: float = 60e9
+    franchisor_royalty_share: float = 0.06       # royalties as share of system sales
+    franchised_share_of_restaurant_spend: float = 0.5
+    industry_pass_through: float = 1.0
     # Health levy rebate: eligible households (targeted_quintiles) get back the
     # levy their quintile pays on average, plus the sales tax charged on it,
     # paid with the quarterly GST/HST credit. A fixed amount per quintile -- not
@@ -350,6 +361,16 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
     surtax_paid = [(top_part * top + surtax["band_collected"] * band) / (households / n_q)
                    for top, band in zip(a.surtax_quintile_shares, a.band_quintile_shares)]
 
+    # Food industry contribution: national revenue into the pool; its pass-through
+    # raises every household's food bill.
+    industry_revenue = a.industry_rate * (a.grocery_sales + a.franchised_restaurant_sales
+                                          * (1 + a.franchisor_royalty_share))
+    pool += industry_revenue / households
+    def industry_cost(q):
+        spend = (a.grocery_spend * q.food_spend_multiplier
+                 + a.restaurant_spend * q.restaurant_multiplier * a.franchised_share_of_restaurant_spend)
+        return a.industry_rate * a.industry_pass_through * spend * price_index
+
     # Health levy rebate comes off the top of the pool.
     eligible = [i in a.targeted_quintiles for i in range(len(flows))]
     rebates = [f["levy"] + f["sales_tax_change"] if (a.levy_rebate and e) else 0.0
@@ -394,9 +415,10 @@ def quintile_impact(t, a=Assumptions(), province="ON", price_index=1.0):
         paid = surtax_paid[len(out)]
         rebate = rebates[len(out)]
         div = dividend[len(out)]
-        net = universal(f) + benefit + rebate + div - f["levy"] - f["sales_tax_change"] - paid
+        ind = industry_cost(q)
+        net = universal(f) + benefit + rebate + div - f["levy"] - f["sales_tax_change"] - paid - ind
         out.append({"quintile": q.quintile, "levy_paid": f["levy"], "surtax_paid": paid,
-                    "contribution_dividend": div,
+                    "contribution_dividend": div, "industry_cost": ind,
                     "levy_rebate": rebate,
                     "universal_subsidy": universal(f), "targeted_benefit": benefit,
                     "healthy_price_cut": cut * a.pass_through,
@@ -482,6 +504,10 @@ if __name__ == "__main__":
         "+ contribution paid out under $100k": replace(a, surtax_rate=0.0125, targeted_share=0.5,
                                                        targeting_mode="voucher", levy_rebate=True,
                                                        surtax_band_start=100_000, surtax_use="dividend"),
+        "+ 0.25% industry contribution to Fund": replace(a, surtax_rate=0.0125, targeted_share=0.5,
+                                                         targeting_mode="voucher", levy_rebate=True,
+                                                         surtax_band_start=100_000, surtax_use="dividend",
+                                                         industry_rate=0.0025),
     }
     households = TAX_REGIMES["households"].sum()
     for name, d in designs.items():
@@ -499,6 +525,10 @@ if __name__ == "__main__":
         closed = income_surtax(replace(d, surtax_avoidance=True, eti=d.eti_gaps_closed))
         print(f"    if people still avoid it: {av['net'] / 1e6:,.0f} M;"
               f" with anti-avoidance package: {closed['net'] / 1e6:,.0f} M")
+        if d.industry_rate:
+            rev = d.industry_rate * (d.grocery_sales + d.franchised_restaurant_sales * (1 + d.franchisor_royalty_share))
+            print(f"    industry contribution: {rev / 1e6:,.0f} M; passed-on cost per household Q1..Q5: "
+                  + " ".join(f"{v:.0f}" for v in q.industry_cost))
         if d.surtax_use == "dividend":
             print(f"    dividend per adult under $100k: {st['net'] / d.under_band_filers:,.0f}/yr;"
                   f" per household Q1..Q5: " + " ".join(f"{v:.0f}" for v in q.contribution_dividend))
