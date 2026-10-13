@@ -6,6 +6,32 @@
 
 ---
 
+## Fix status (2026-10-13)
+
+All items below are fixed in the Floot project (checkpoint "SEO fixes: homepage content, social tags, glossary URLs, About page"). **They go live only after the next publish.**
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Server-rendered homepage hides CTAs and price | Fixed. `LandingPage` always gets `showActions` while signed out, including the SSR loading state |
+| 2 | Homepage links nowhere indexable | Fixed. New `SiteFooter` (calculator, loan terms, About, privacy) on all public pages, plus nav links and in-content links to glossary terms |
+| 3 | No OG / Twitter / structured data | Fixed. Site-wide OG/Twitter defaults with a new share image; Organization, WebSite, WebApplication (price in CAD) and FAQPage on `/`; DefinedTermSet on `/definitions`; DefinedTerm and BreadcrumbList on each term; AboutPage on `/about` |
+| 4 | Homepage has no explicit title or description | Fixed. Explicit title and 155-character description. Project-metadata description shortened to match |
+| 5 | "Under construction" footer | Removed |
+| 6 | Thin homepage, no keyword | Fixed. Keyword eyebrow, Canada mention, "5 Cs of credit" section, "Who it's for" and a 6-question FAQ |
+| 7 | Thin glossary pages | Fixed. Longer write-ups for the six key terms (statements, debt payments, equity, credit score, personal net worth, business tangible net worth), plus breadcrumbs, related terms and a calculator CTA |
+| 8 | `/partners` indexable while hidden | Set to `noindex` (matches the 2026-10-06 decision to hide it) |
+| 9 | Soft-404 for unknown terms | Fixed. HTTP 404 via `definitions.$term.prefetch.ts` and `noindex` |
+| 10 | E-E-A-T | Partly fixed. New `/about` page with company, purpose, methodology and contacts. **Still to add: a named founder or advisor and their credentials, and testimonials once you have them.** I did not invent these |
+| 11 | Sitemap | Rebuilt with `lastmod`, `/about` and the new glossary URLs |
+| 12 | camelCase glossary slugs | Fixed. Hyphenated paths with 301 redirects from the old URLs, done in Floot prefetch |
+| 13 | Duplicate verification tag | Removed |
+| 14 | `nofollow` on login pages | Now `noindex` only |
+| 16 | Share image | Created at 1024×576 |
+
+**After publishing:** run `curl -sI https://beloanready.com/definitions/creditScore` and expect a 301 to `/definitions/credit-score`. Then resubmit the sitemap in Search Console and request indexing for `/`, `/about` and `/definitions`.
+
+---
+
 ## Summary
 
 The technical base is in good shape. robots.txt and the sitemap are in place, canonicals point every hostname at beloanready.com, app screens are `noindex`, SSR is on, and `lang="en"` is set. The problems are visibility and content. Google sees a ~200-word homepage with no call to action, no links into the rest of the site, no social or structured data, and a page that says it is "still under construction". For a finance product (Google treats this as YMYL, "Your Money or Your Life"), that is the main thing holding it back.
