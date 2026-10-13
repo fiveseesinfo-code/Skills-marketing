@@ -8,7 +8,7 @@
 
 ## Fix status (2026-10-13)
 
-All items below are fixed in the Floot project (checkpoint "SEO fixes: homepage content, social tags, glossary URLs, About page"). **They go live only after the next publish.**
+All items below are fixed in the Floot project (checkpoint "SEO fixes: homepage content, social tags, glossary URLs, About page"). **Published to beloanready.com on 2026-10-13 at 21:38 UTC.**
 
 | # | Item | Status |
 |---|---|---|
