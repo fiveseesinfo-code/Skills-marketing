@@ -1,0 +1,14 @@
+# Social media queue. Add posts below; the workflow publishes each one once
+# its date (Moncton time) has passed, then records the result under "posted".
+#
+#   - id: short-unique-name
+#     date: 2026-12-01 09:00        # local Moncton time
+#     text: Your post text
+#     link: https://example.com     # optional
+#     platforms: [linkedin, facebook, x, bluesky]   # optional, default = all configured
+
+posts:
+  - id: example-post
+    date: 2099-01-01 09:00
+    text: This is an example post. Change the date to schedule it.
+    platforms: [linkedin]
