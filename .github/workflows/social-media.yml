@@ -45,6 +45,7 @@ jobs:
           # Facebook Page
           FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
           FACEBOOK_PAGE_TOKEN: ${{ secrets.FACEBOOK_PAGE_TOKEN }}
+          FACEBOOK_GRAPH_VERSION: ${{ vars.FACEBOOK_GRAPH_VERSION }}
           # X (Twitter)
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}

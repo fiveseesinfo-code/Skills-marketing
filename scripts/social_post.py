@@ -41,7 +41,7 @@ def full_text(post):
 
 def post_linkedin(post, creds):
     token, author = creds
-    version = os.environ.get("LINKEDIN_VERSION") or "202510"
+    version = os.environ.get("LINKEDIN_VERSION") or "202609"
     body = {
         "author": author,
         "commentary": full_text(post),
@@ -73,8 +73,9 @@ def post_facebook(post, creds):
     data = {"message": post["text"].strip(), "access_token": token}
     if post.get("link"):
         data["link"] = post["link"]
+    version = os.environ.get("FACEBOOK_GRAPH_VERSION") or "v25.0"
     r = requests.post(
-        f"https://graph.facebook.com/v21.0/{page_id}/feed", data=data, timeout=TIMEOUT
+        f"https://graph.facebook.com/{version}/{page_id}/feed", data=data, timeout=TIMEOUT
     )
     r.raise_for_status()
     return r.json().get("id", "ok")
